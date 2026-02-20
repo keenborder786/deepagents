@@ -253,6 +253,13 @@ class ChatTextArea(TextArea):
             show=False,
             priority=True,
         ),
+        Binding(
+            "ctrl+shift+v",
+            "paste_clipboard_image",
+            "Paste Image",
+            show=False,
+            priority=True,
+        ),
         # Mac Cmd+Z/Cmd+Shift+Z for undo/redo (in addition to Ctrl+Z/Y)
         Binding("cmd+z,super+z", "undo", "Undo", show=False, priority=True),
         Binding("cmd+shift+z,super+shift+z", "redo", "Redo", show=False, priority=True),
@@ -303,6 +310,13 @@ class ChatTextArea(TextArea):
             self.raw_text = raw_text
             self.paths = paths
             super().__init__()
+
+    class ClipboardImageRequested(Message):
+        """Request to check the system clipboard for image data.
+
+        Posted when a paste event carries no text (the clipboard likely
+        holds an image that the terminal cannot represent as text).
+        """
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the chat text area."""
@@ -461,17 +475,27 @@ class ChatTextArea(TextArea):
         return None
 
     async def _on_paste(self, event: events.Paste) -> None:
-        """Handle paste events and detect dragged file paths."""
+        """Handle paste events, detecting dragged file paths or clipboard images."""
         from deepagents_cli.input import parse_pasted_file_paths
 
         paths = parse_pasted_file_paths(event.text)
-        if not paths:
-            await super()._on_paste(event)
+        if paths:
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.PastedPaths(event.text, paths))
             return
 
-        event.prevent_default()
-        event.stop()
-        self.post_message(self.PastedPaths(event.text, paths))
+        if not event.text.strip():
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.ClipboardImageRequested())
+            return
+
+        await super()._on_paste(event)
+
+    def action_paste_clipboard_image(self) -> None:
+        """Explicitly request a clipboard image check (ctrl+shift+v)."""
+        self.post_message(self.ClipboardImageRequested())
 
     def set_text_from_history(self, text: str) -> None:
         """Set text from history navigation."""
@@ -927,17 +951,48 @@ class ChatInput(Vertical):
 
         self._insert_pasted_paths(event.raw_text, event.paths)
 
+    def on_chat_text_area_clipboard_image_requested(
+        self,
+        event: ChatTextArea.ClipboardImageRequested,  # noqa: ARG002  # Textual event handler signature
+    ) -> None:
+        """Check system clipboard for image data and attach if found.
+
+        Triggered when a paste event carries no text or when the user
+        explicitly presses Ctrl+Shift+V.
+        """
+        self._try_attach_clipboard_image()
+
+    def _try_attach_clipboard_image(self) -> bool:
+        """Read the system clipboard for image data and attach it.
+
+        Returns:
+            `True` when an image was found and attached.
+        """
+        if not self._image_tracker or not self._text_area:
+            return False
+
+        from deepagents_cli.image_utils import get_clipboard_image
+
+        image_data = get_clipboard_image()
+        if image_data is None:
+            return False
+
+        placeholder = self._image_tracker.add_image(image_data)
+        self._text_area.insert(f"{placeholder} ")
+        return True
+
     def handle_external_paste(self, pasted: str) -> bool:
         """Handle paste text from app-level routing when input is not focused.
 
         When the text area is mounted, the paste is always consumed: file paths
-        are attached as images, and plain text is inserted directly.
+        are attached as images, empty text triggers a clipboard image check,
+        and plain text is inserted directly.
 
         Args:
             pasted: Raw pasted text payload.
 
         Returns:
-            `True` when the text area is mounted and the paste was inserted,
+            `True` when the text area is mounted and the paste was handled,
                 `False` if the widget is not yet composed.
         """
         if not self._text_area:
@@ -948,6 +1003,8 @@ class ChatInput(Vertical):
         paths = parse_pasted_file_paths(pasted)
         if paths:
             self._insert_pasted_paths(pasted, paths)
+        elif not pasted.strip():
+            self._try_attach_clipboard_image()
         else:
             self._text_area.insert(pasted)
 

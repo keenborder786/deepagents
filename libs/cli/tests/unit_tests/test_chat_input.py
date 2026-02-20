@@ -21,6 +21,8 @@ from deepagents_cli.widgets.chat_input import (
 if TYPE_CHECKING:
     from textual.pilot import Pilot
 
+    from deepagents_cli.image_utils import ImageData
+
 
 class TestCompletionOption:
     """Test CompletionOption widget."""
@@ -1438,4 +1440,153 @@ class TestDroppedImagePaste:
             assert len(app.submitted) == 1
             assert app.submitted[0].value == "[image 1]"
             assert app.submitted[0].mode == "normal"
+            assert len(app.tracker.get_images()) == 1
+
+
+class TestClipboardImagePaste:
+    """Tests for clipboard image paste via empty-text paste events."""
+
+    @staticmethod
+    def _make_fake_image_data() -> ImageData:
+        """Build a minimal ImageData for mocking get_clipboard_image."""
+        from deepagents_cli.image_utils import ImageData
+
+        return ImageData(
+            base64_data="iVBORw0KGgoAAAANSUhEUg==",
+            format="png",
+            placeholder="[image]",
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_paste_attaches_clipboard_image(self) -> None:
+        """An empty paste event should read the clipboard and attach an image."""
+        from unittest.mock import patch
+
+        fake = self._make_fake_image_data()
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            with patch(
+                "deepagents_cli.image_utils.get_clipboard_image",
+                return_value=fake,
+            ):
+                await chat._text_area._on_paste(events.Paste(""))
+                await pilot.pause()
+
+            assert "[image 1]" in chat._text_area.text
+            assert len(app.tracker.get_images()) == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_paste_no_clipboard_image_is_noop(self) -> None:
+        """An empty paste with no clipboard image should not modify state."""
+        from unittest.mock import patch
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            with patch(
+                "deepagents_cli.image_utils.get_clipboard_image",
+                return_value=None,
+            ):
+                await chat._text_area._on_paste(events.Paste(""))
+                await pilot.pause()
+
+            assert chat._text_area.text == ""
+            assert app.tracker.get_images() == []
+
+    @pytest.mark.asyncio
+    async def test_nonempty_paste_skips_clipboard_image_check(self) -> None:
+        """A paste with regular text should NOT trigger a clipboard image check."""
+        from unittest.mock import patch
+
+        fake = self._make_fake_image_data()
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            with patch(
+                "deepagents_cli.image_utils.get_clipboard_image",
+                return_value=fake,
+            ) as mock_get:
+                await chat._text_area._on_paste(events.Paste("hello world"))
+                await pilot.pause()
+
+            mock_get.assert_not_called()
+            assert "hello world" in chat._text_area.text
+            assert app.tracker.get_images() == []
+
+    @pytest.mark.asyncio
+    async def test_handle_external_paste_empty_checks_clipboard(self) -> None:
+        """handle_external_paste('') should attempt a clipboard image read."""
+        from unittest.mock import patch
+
+        fake = self._make_fake_image_data()
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            with patch(
+                "deepagents_cli.image_utils.get_clipboard_image",
+                return_value=fake,
+            ):
+                result = chat.handle_external_paste("")
+
+            await pilot.pause()
+
+            assert result is True
+            assert "[image 1]" in chat._text_area.text
+            assert len(app.tracker.get_images()) == 1
+
+    @pytest.mark.asyncio
+    async def test_handle_external_paste_empty_no_image(self) -> None:
+        """handle_external_paste('') with no clipboard image is still consumed."""
+        from unittest.mock import patch
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            with patch(
+                "deepagents_cli.image_utils.get_clipboard_image",
+                return_value=None,
+            ):
+                result = chat.handle_external_paste("")
+
+            await pilot.pause()
+
+            assert result is True
+            assert chat._text_area.text == ""
+            assert app.tracker.get_images() == []
+
+    @pytest.mark.asyncio
+    async def test_ctrl_shift_v_triggers_clipboard_image(self) -> None:
+        """Ctrl+Shift+V binding should trigger clipboard image attachment."""
+        from unittest.mock import patch
+
+        fake = self._make_fake_image_data()
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat._text_area.focus()
+
+            with patch(
+                "deepagents_cli.image_utils.get_clipboard_image",
+                return_value=fake,
+            ):
+                await pilot.press("ctrl+shift+v")
+                await pilot.pause()
+
+            assert "[image 1]" in chat._text_area.text
             assert len(app.tracker.get_images()) == 1
